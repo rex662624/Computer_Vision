@@ -96,7 +96,8 @@ class HDR (object):
         #plt.imshow(mask_img[0], cmap='gray')
         #plt.show()
 
-#====================HDR=====================================        
+#============================HDR=====================================
+        
     def LoadImgHDR(self,path):
         filenames = []
         exposure_times = []
@@ -172,7 +173,7 @@ class HDR (object):
 
         return g, lE
 
-    #===================Reconstruction E=====================
+#===================Reconstruction E================================
 
     def construct_radiance_map(self,g, Z, ln_t, w):
         acc_E = [0]*len(Z[0])
@@ -234,6 +235,83 @@ class HDR (object):
         rgbe.flatten().tofile(f)
         f.close()
 
+#=========================Tone mapping=================================
+    #========global tone mapping=========
+    def ToneMappingGlobal(self, radiance, d=1e-6, a=0.5):
+        # d: log zero avoidance
+        # a: average key 整體圖片的亮度
+        # Lw:多少亮度以上變成255
+        Lw = radiance
+        Lw_average = np.exp(np.mean(np.log(d + Lw)))
+        Lm = (a / Lw_average) * Lw
+        Lm_white = np.max(Lm) # Lm_white, intensity that larger than this value will set to 1
+        Ld = (Lm * (1 + (Lm / (Lm_white ** 2)))) / (1 + Lm)
+        result = np.clip(np.array(Ld * 255), 0, 255).astype(np.uint8)
+
+        cv2.imwrite("tonemap_photographic_global.jpg", result)
+        return result
+
+    #========local tone mapping=========
+    # a: average key
+    # fi: sharpening
+    # epsilon: threshold of smoothness
+    #smax: s find to  what value
+    def gaussian_blurs(self,im, smax=25, a=1.0, fi=8.0, epsilon=0.01):
+        cols, rows = im.shape
+        blur_prev = im
+        num_s = int((smax+1)/2)
+        
+        blur_list = np.zeros(im.shape + (num_s,))
+        Vs_list = np.zeros(im.shape + (num_s,))
+        
+        for i, s in enumerate(range(1, smax+1, 2)):
+            print('\rfilter:', s, end='')
+            blur = cv2.GaussianBlur(im, (s, s), 0)
+            Vs = np.abs((blur - blur_prev) / (2 ** fi * a / s ** 2 + blur_prev))
+            blur_list[:, :, i] = blur
+            Vs_list[:, :, i] = Vs
+        
+        # 2D index
+        print(', find index...', end='')
+        smax = np.argmax(Vs_list > epsilon, axis=2)
+        smax[np.where(smax == 0)] = 1
+        smax -= 1
+        
+        # select blur size for each pixel
+        print(', apply index...')
+        I, J = np.ogrid[:cols, :rows]
+        blur_smax = blur_list[I, J, smax]
+
+        return blur_smax
+
+    def ToneMappingLocal(self,radiance, d=1e-6, a=0.5, method=0):
+        result = np.zeros_like(radiance, dtype=np.float32)
+        weights = [0.065, 0.67, 0.265]
+        
+        if method == 0:
+            Lw_ave = np.exp(np.mean(np.log(d + radiance)))
+            
+            for c in range(3):
+                Lw = radiance[:, :, c]
+                Lm = (a / Lw_ave) * Lw
+                Ls = self.gaussian_blurs(Lm)
+                Ld = Lm / (1 + Ls)
+                result[:, :, c] = np.clip(np.array(Ld * 255), 0, 255).astype(np.uint8)
+        
+        elif method == 1:
+            Lw = 0.065 * radiance[:, :, 0] + 0.67 * radiance[:, :, 1] + 0.265 * radiance[:, :, 2]
+            Lw_ave = np.exp(np.mean(np.log(d + Lw)))
+            Lm = (a / Lw_ave) * Lw
+            Ls = self.gaussian_blurs(Lm)
+            Ld = Lm / (1 + Ls)
+            
+            for c in range(3):
+                result[:, :, c] = np.clip(np.array((Ld / Lw) * radiance[:, :, c] * 255), 0, 255).astype(np.uint8)
+
+        cv2.imwrite("tonemap_photographic_local2.jpg", result)
+        return result
+
+
 def main(args):
     HDR_Pipeline = HDR(args)
     origin_img_path = args.original_img_path
@@ -283,7 +361,9 @@ def main(args):
     
     
     print("HDR Done")
-
+    #======================tone mapping=============================
+    res = HDR_Pipeline.ToneMappingGlobal(hdr)
+    res = HDR_Pipeline.ToneMappingLocal(hdr,method=1)
 
 
 if __name__ == '__main__':
