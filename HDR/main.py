@@ -8,7 +8,7 @@ import math
 
 
 parser = argparse.ArgumentParser(description='VFX_Hw1_HDR')
-parser.add_argument('-i', '--original_img_path', default='./data/test/', type=str)# image path
+parser.add_argument('-i', '--original_img_path', default='./5/', type=str)# image path
 
 args = parser.parse_args()
 
@@ -22,11 +22,10 @@ class HDR (object):
 
     def ReadImage(self,path):
         
-        
         print(path)
         for filename in os.listdir(path):
             #print(filename)
-            img= cv2.imread(os.path.join(path,filename))
+            img= cv2.imread(os.path.join(path,filename),1)
             if img is not None:
                 self.image_list.append(img)
 
@@ -39,11 +38,14 @@ class HDR (object):
 # 2.save image after alignment
 #
     def Alignment(self, depth = 6):
+        
+        AlignmentImage = []
+
         gray_img_list = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for img in self.image_list]
         #print(len(gray_img_list))
 
-        for i in range(len(gray_img_list)):
-            cv2.imwrite(str(i)+'gray.jpg',gray_img_list[i])
+        #for i in range(len(gray_img_list)):
+        #    cv2.imwrite(str(i)+'gray.jpg',gray_img_list[i])
 
         median = [np.median(img) for img in gray_img_list]
         
@@ -51,7 +53,7 @@ class HDR (object):
         #print(gray_img_list[1])
         #h, w = gray_img_list[0].shape[:2]
         #gray_img_list[0] = cv2.warpAffine(gray_img_list[1], np.float32([[1, 0, 99],[0, 1,-20]]), (w, h))
-        print(gray_img_list[0])
+        #print(gray_img_list[0])
 
         for i in range(0, len(binary_thres_img)):# every image need alignment
             #print(i)
@@ -91,25 +93,39 @@ class HDR (object):
                 x, y = x+best_dx, y+best_dy
 
             print("Image",i,": best_dx: ", x,"best_dy ",y)
+            
 
+            h, w = gray_img_list[0].shape[:2]
+            AlignmentImage.append(cv2.warpAffine(self.image_list[i], np.float32([[1, 0, x],[0, 1, y]]), (w, h)))
+            print(np.array(AlignmentImage).shape)
+
+        
         #print(median,binary_thres_img[0])
         #plt.imshow(mask_img[0], cmap='gray')
         #plt.show()
-
+        return AlignmentImage
 #============================HDR=====================================
         
-    def LoadImgHDR(self,path):
+    def LoadImgHDR(self,path,img_list_temp):
         filenames = []
         exposure_times = []
         f = open(os.path.join(path, 'image_list.txt'))
         for line in f:
             if (line[0] == '#'):
                 continue
+            #print(line)
             (filename, exposure, *rest) = line.split()
             filenames.append(filename)
+            #print(filename)
             exposure_times.append(exposure)
+
+        self.image_list = [cv2.imread(os.path.join(path, f), 1) for f in filenames]
+        img_list_temp = self.Alignment(depth = 6)
         
-        img_list = [cv2.imread(os.path.join(path, f), 1) for f in filenames]
+        img_list = []
+        
+        for i in range(len(img_list_temp)):
+            img_list.append(cv2.resize(img_list_temp[i],(1500,1000),interpolation = cv2.INTER_CUBIC))
         
         img_list_b = [img[:,:,0] for img in img_list]
         img_list_g = [img[:,:,1] for img in img_list]
@@ -308,7 +324,7 @@ class HDR (object):
             for c in range(3):
                 result[:, :, c] = np.clip(np.array((Ld / Lw) * radiance[:, :, c] * 255), 0, 255).astype(np.uint8)
 
-        cv2.imwrite("tonemap_photographic_local2.jpg", result)
+        cv2.imwrite("tonemap_photographic_local.jpg", result)
         return result
 
 
@@ -318,12 +334,12 @@ def main(args):
 
     #=========Alignment=======================
     HDR_Pipeline.ReadImage(origin_img_path)
-    HDR_Pipeline.Alignment(depth = 6)
+    AlignmentImage = HDR_Pipeline.Alignment(depth = 6)
     
     #=========HDR_Paul_Debvec_Method=============================
     print("\tRead Image For HDR")
-    img_dir = "./street"
-    ImgListB, ImgListG, ImgListR, ExposureTimes = HDR_Pipeline.LoadImgHDR(img_dir)
+    img_dir = "./5"
+    ImgListB, ImgListG, ImgListR, ExposureTimes = HDR_Pipeline.LoadImgHDR(img_dir,AlignmentImage)
     #print(ImgListB[0])
     #print(ImgListG[0])
     #print(ImgListR[0])
@@ -363,7 +379,7 @@ def main(args):
     print("HDR Done")
     #======================tone mapping=============================
     res = HDR_Pipeline.ToneMappingGlobal(hdr)
-    res = HDR_Pipeline.ToneMappingLocal(hdr,method=1)
+    res = HDR_Pipeline.ToneMappingLocal(hdr)
 
 
 if __name__ == '__main__':
