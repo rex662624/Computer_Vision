@@ -5,6 +5,7 @@ import argparse
 from imageio import imread, imwrite
 import os
 import math
+import random
 
 
 parser = argparse.ArgumentParser(description='VFX_Hw1_HDR')
@@ -15,7 +16,7 @@ args = parser.parse_args()
 
 class HDR (object):
     def __init__(self,args):
-        #self.img_path = args.img_path
+        self.img_path = args.original_img_path
         self.image_list = []
 
 #======================Read Images =========================
@@ -41,6 +42,9 @@ class HDR (object):
         
         AlignmentImage = []
 
+        h, w = self.image_list[0].shape[:2]
+        #self.image_list[1] = cv2.warpAffine(self.image_list[4], np.float32([[1, 0, 96],[0, 1,90]]), (w, h))
+        
         gray_img_list = [cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) for img in self.image_list]
         #print(len(gray_img_list))
 
@@ -67,8 +71,9 @@ class HDR (object):
                 #print(d)
                 h, w = gray_img_list[0].shape[:2]
                 
-                standard_img = cv2.resize(binary_thres_img[0], (0, 0), fx=1/(2**d), fy=1/(2**d))
+                standard_img = cv2.resize(binary_thres_img[4], (0, 0), fx=1/(2**d), fy=1/(2**d))
                 now_img = cv2.resize(binary_thres_img[i], (0, 0), fx=1/(2**d), fy=1/(2**d))
+                #cv2.imwrite(str(d)+'depth.jpg',standard_img)
                 #print("---",2**d)
                 ignore_pixels = np.ones(standard_img.shape)
                 ignore_pixels[np.where(np.abs(standard_img - median[i]) <= 4)] = 0
@@ -81,6 +86,7 @@ class HDR (object):
                     for dy in [-1, 0, 1]:
                         now_img_affine = cv2.warpAffine(now_img, np.float32([[1, 0, x + dx],[0, 1, y+dy]]), (w, h))
                         error = np.abs(np.sign(standard_img - now_img_affine))
+                        
                         #error = np.sum(error * ignore_pixels)
                         error = np.sum(error)
                         
@@ -106,10 +112,10 @@ class HDR (object):
         return AlignmentImage
 #============================HDR=====================================
         
-    def LoadImgHDR(self,path,img_list_temp):
+    def LoadImgHDR(self,path):
         filenames = []
         exposure_times = []
-        f = open(os.path.join(path, 'image_list.txt'))
+        f = open(os.path.join(path, 'exposure.txt'))
         for line in f:
             if (line[0] == '#'):
                 continue
@@ -120,13 +126,20 @@ class HDR (object):
             exposure_times.append(exposure)
 
         self.image_list = [cv2.imread(os.path.join(path, f), 1) for f in filenames]
+        #把檔案讀進來後直接做alignment
         img_list_temp = self.Alignment(depth = 6)
         
-        img_list = []
+
+        #=======================如果必要，做resize 以減少computation cost
         
-        for i in range(len(img_list_temp)):
-            img_list.append(cv2.resize(img_list_temp[i],(1500,1000),interpolation = cv2.INTER_CUBIC))
+        #img_list = []
         
+        #for i in range(len(img_list_temp)):
+        #    img_list.append(cv2.resize(img_list_temp[i],(1500,1000),interpolation = cv2.INTER_CUBIC))
+        
+        #=========================================
+
+
         img_list_b = [img[:,:,0] for img in img_list]
         img_list_g = [img[:,:,1] for img in img_list]
         img_list_r = [img[:,:,2] for img in img_list]
@@ -144,9 +157,25 @@ class HDR (object):
         # g(z) is the log exposure corresponding to pixel value z 
         # lE(i) is the log film irradiance at pixel location i 
         
-        # resize to sample?????????
-        small_img = [cv2.resize(img, (10, 10)) for img in img_list]
-        Z = [img.flatten() for img in small_img]
+        
+        sample_img = [cv2.resize(img, (10, 10)) for img in img_list]
+        Z = [img.flatten() for img in sample_img]
+        '''
+        w_indexlist = range(0,999)
+        h_indexlist = range(0,999)
+        sample_w = random.sample(w_indexlist,200)
+        sample_h = random.sample(h_indexlist,200)
+        print(sample_h)
+        print(sample_w)
+        Z = []
+        for i in range(len(img_list)):
+            temp = []
+            for j in range(100):
+                temp.append(img_list[i][sample_w[j]][sample_h[j]])
+            Z.append(temp)
+        '''
+        print(np.array(Z).shape)
+        
         #===========
         B = [math.log(e,2) for e in exposure_times]
         l = 50
@@ -156,6 +185,7 @@ class HDR (object):
         return self.gsolve(Z, B, l, w)
 
     def gsolve(self, Z, B, l, w):
+        
         n = 256
         A = np.zeros(shape=(np.array(Z).shape[0]*np.array(Z).shape[1]+n+1, n+np.array(Z).shape[1]), dtype=np.float32)
         b = np.zeros(shape=(np.size(A, 0), 1), dtype=np.float32)
@@ -191,7 +221,7 @@ class HDR (object):
 
 #===================Reconstruction E================================
 
-    def construct_radiance_map(self,g, Z, ln_t, w):
+    def Radiance_Map(self,g, Z, ln_t, w):
         acc_E = [0]*len(Z[0])
         ln_E = [0]*len(Z[0])
         
@@ -207,28 +237,28 @@ class HDR (object):
         
         return ln_E
 
-    def construct_hdr(self,img_list, response_curve, exposure_times):
-        # Construct radiance map for each channels
+    def Reconstruction_E(self,img_list, Response_Curve, exposure_times):
         img_size = img_list[0][0].shape
-        w = [z if z <= 0.5*255 else 255-z for z in range(256)]
-        ln_t = np.log2(exposure_times)
-
-        vfunc = np.vectorize(lambda x:math.exp(x))
         hdr = np.zeros((img_size[0], img_size[1], 3), 'float32')
-
-        # construct radiance map for BGR channels
+        ln_t = np.log2(exposure_times)
+        w = [z if z <= 0.5*255 else 255-z for z in range(256)]
+        
+        
+        vfunc = np.vectorize(lambda x:math.exp(x))
+    
+        
         for i in range(3):
-            print(' - Constructing radiance map for {0} channel .... '.format('BGR'[i]), end='', flush=True)
+            print(' - Compute Radiance map: channel {0} .... \n'.format('BGR'[i]), end='', flush=True)
             Z = [img.flatten().tolist() for img in img_list[i]]
-            E = self.construct_radiance_map(response_curve[i], Z, ln_t, w)
-            # Exponational each channels and reshape to 2D-matrix
+            E = self.Radiance_Map(Response_Curve[i], Z, ln_t, w)
             hdr[..., i] = np.reshape(vfunc(E), img_size)
-            print('done')
+            
 
         return hdr
  
+
     #https://gist.github.com/edouardp/3089602
-    def save_hdr(self,hdr, filename):
+    def HDR_Image_Save(self,hdr, filename):
         image = np.zeros((hdr.shape[0], hdr.shape[1], 3), 'float32')
         image[..., 0] = hdr[..., 2]
         image[..., 1] = hdr[..., 1]
@@ -253,93 +283,102 @@ class HDR (object):
 
 #=========================Tone mapping=================================
     #========global tone mapping=========
-    def ToneMappingGlobal(self, radiance, d=1e-6, a=0.5):
+    def ToneMappingGlobal(self, radiance_map, d=1e-6, a=0.5):
         # d: log zero avoidance
         # a: average key 整體圖片的亮度
         # Lw:多少亮度以上變成255
-        Lw = radiance
+        Lw = radiance_map
         Lw_average = np.exp(np.mean(np.log(d + Lw)))
         Lm = (a / Lw_average) * Lw
         Lm_white = np.max(Lm) # Lm_white, intensity that larger than this value will set to 1
         Ld = (Lm * (1 + (Lm / (Lm_white ** 2)))) / (1 + Lm)
         result = np.clip(np.array(Ld * 255), 0, 255).astype(np.uint8)
 
-        cv2.imwrite("tonemap_photographic_global.jpg", result)
+        cv2.imwrite(self.img_path[2:]+"_"+"tone_mapping_global.jpg", result)
         return result
 
     #========local tone mapping=========
     # a: average key
     # fi: sharpening
     # epsilon: threshold of smoothness
-    #smax: s find to  what value
-    def gaussian_blurs(self,im, smax=25, a=1.0, fi=8.0, epsilon=0.01):
+    #s_max: s find to  what value
+    def My_Gaussian(self,im, s_max=25, a=1.0, fi=8.0, epsilon=0.01):
         cols, rows = im.shape
         blur_prev = im
-        num_s = int((smax+1)/2)
+        num_s = int((s_max+1)/2)
         
         blur_list = np.zeros(im.shape + (num_s,))
         Vs_list = np.zeros(im.shape + (num_s,))
         
-        for i, s in enumerate(range(1, smax+1, 2)):
-            print('\rfilter:', s, end='')
+        for i, s in enumerate(range(1, s_max+1, 2)):
+            
             blur = cv2.GaussianBlur(im, (s, s), 0)
             Vs = np.abs((blur - blur_prev) / (2 ** fi * a / s ** 2 + blur_prev))
             blur_list[:, :, i] = blur
             Vs_list[:, :, i] = Vs
         
         # 2D index
-        print(', find index...', end='')
-        smax = np.argmax(Vs_list > epsilon, axis=2)
-        smax[np.where(smax == 0)] = 1
-        smax -= 1
+        s_max = np.argmax(Vs_list > epsilon, axis=2)
+        s_max[np.where(s_max == 0)] = 1
+        s_max -= 1
         
         # select blur size for each pixel
-        print(', apply index...')
         I, J = np.ogrid[:cols, :rows]
-        blur_smax = blur_list[I, J, smax]
+        blur_s_max = blur_list[I, J, s_max]
 
-        return blur_smax
+        return blur_s_max
 
-    def ToneMappingLocal(self,radiance, d=1e-6, a=0.5, method=0):
-        result = np.zeros_like(radiance, dtype=np.float32)
+    #normal tone mappinf
+    def ToneMappingLocal(self,radiance_map, d=1e-6, a=0.5):
+        result = np.zeros_like(radiance_map, dtype=np.float32)
         weights = [0.065, 0.67, 0.265]
         
-        if method == 0:
-            Lw_ave = np.exp(np.mean(np.log(d + radiance)))
-            
-            for c in range(3):
-                Lw = radiance[:, :, c]
-                Lm = (a / Lw_ave) * Lw
-                Ls = self.gaussian_blurs(Lm)
-                Ld = Lm / (1 + Ls)
-                result[:, :, c] = np.clip(np.array(Ld * 255), 0, 255).astype(np.uint8)
         
-        elif method == 1:
-            Lw = 0.065 * radiance[:, :, 0] + 0.67 * radiance[:, :, 1] + 0.265 * radiance[:, :, 2]
-            Lw_ave = np.exp(np.mean(np.log(d + Lw)))
+        Lw_ave = np.exp(np.mean(np.log(d + radiance_map)))
+        
+        for c in range(3):
+            Lw = radiance_map[:, :, c]
             Lm = (a / Lw_ave) * Lw
-            Ls = self.gaussian_blurs(Lm)
+            Ls = self.My_Gaussian(Lm)
             Ld = Lm / (1 + Ls)
-            
-            for c in range(3):
-                result[:, :, c] = np.clip(np.array((Ld / Lw) * radiance[:, :, c] * 255), 0, 255).astype(np.uint8)
-
-        cv2.imwrite("tonemap_photographic_local.jpg", result)
+            result[:, :, c] = np.clip(np.array(Ld * 255), 0, 255).astype(np.uint8)
+        
+        cv2.imwrite(self.img_path[2:]+"_"+"tone_mapping_local.jpg", result)
         return result
+
+
+    def ToneMappingLocal_Radial(self,radiance_map, d=1e-6, a=0.5):
+        result = np.zeros_like(radiance_map, dtype=np.float32)
+        
+        
+        
+        Lw = 0.065 * radiance_map[:, :, 0] + 0.67 * radiance_map[:, :, 1] + 0.265 * radiance_map[:, :, 2]
+        Lw_ave = np.exp(np.mean(np.log(d + Lw)))
+        Lm = (a / Lw_ave) * Lw
+        Ls = self.My_Gaussian(Lm)
+        Ld = Lm / (1 + Ls)
+        
+        for c in range(3):
+            result[:, :, c] = np.clip(np.array((Ld / Lw) * radiance_map[:, :, c] * 255), 0, 255).astype(np.uint8)
+        
+        cv2.imwrite(self.img_path[2:]+"_"+"tone_mapping_local_radial.jpg", result)
+        return result
+
 
 
 def main(args):
     HDR_Pipeline = HDR(args)
     origin_img_path = args.original_img_path
 
+    
     #=========Alignment=======================
-    HDR_Pipeline.ReadImage(origin_img_path)
-    AlignmentImage = HDR_Pipeline.Alignment(depth = 6)
+    #HDR_Pipeline.ReadImage(origin_img_path)
+    #AlignmentImage = HDR_Pipeline.Alignment(depth = 6)
     
     #=========HDR_Paul_Debvec_Method=============================
     print("\tRead Image For HDR")
-    img_dir = "./5"
-    ImgListB, ImgListG, ImgListR, ExposureTimes = HDR_Pipeline.LoadImgHDR(img_dir,AlignmentImage)
+   
+    ImgListB, ImgListG, ImgListR, ExposureTimes = HDR_Pipeline.LoadImgHDR(origin_img_path)
     #print(ImgListB[0])
     #print(ImgListG[0])
     #print(ImgListR[0])
@@ -356,23 +395,22 @@ def main(args):
     plt.plot(gFunctionG, range(256), 'gx')
     plt.plot(gFunctionB, range(256), 'bx')
         
-    plt.savefig('ResponseCurve.png')
+    plt.savefig(origin_img_path[2:]+"_"+'ResponseCurve.png')
     
     print("\tCompute Responce Curve Done")
 
     #==================Reconstruction E=============================
-    hdr = HDR_Pipeline.construct_hdr([ImgListB, ImgListG, ImgListR], [gFunctionB, gFunctionG, gFunctionR], ExposureTimes)
+    hdr = HDR_Pipeline.Reconstruction_E([ImgListB, ImgListG, ImgListR], [gFunctionB, gFunctionG, gFunctionR], ExposureTimes)
     
     
 
     plt.figure(figsize=(12,8))
     plt.imshow(np.log2(cv2.cvtColor(hdr, cv2.COLOR_BGR2GRAY)), cmap='jet')
     plt.colorbar()
-    plt.savefig('radiance-map.png')
+    plt.savefig(origin_img_path[2:]+"_"+'radiance-map.png')
     
 
-    
-    HDR_Pipeline.save_hdr(hdr,"HDR.hdr")
+    HDR_Pipeline.HDR_Image_Save(hdr,origin_img_path[2:]+"_"+"HDR.hdr")
     
     
     
@@ -380,6 +418,7 @@ def main(args):
     #======================tone mapping=============================
     res = HDR_Pipeline.ToneMappingGlobal(hdr)
     res = HDR_Pipeline.ToneMappingLocal(hdr)
+    res = HDR_Pipeline.ToneMappingLocal_Radial(hdr)
 
 
 if __name__ == '__main__':
